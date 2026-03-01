@@ -14,12 +14,16 @@
   ],
   "main": "./dist/extension.js",
   "contributes": {
-    "commands": [
-      {
-        "command": "error-sound.helloWorld",
-        "title": "Hello World"
+    "configuration": {
+      "title": "Error Sound",
+      "properties": {
+        "errorSound.customSoundPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to a custom .mp3 or .wav file to play on error. Leave blank to use the default sound."
+        }
       }
-    ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run package",

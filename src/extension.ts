@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
 import * as path from 'path';
 const { exec } = require('child_process');
 
@@ -6,6 +7,7 @@ export function activate(context: vscode.ExtensionContext) {
     console.log('Error Sound Extension is now active!');
 
     let previousErrorCount = 0;
+    let isCooldown = false; // 👈 Our new safety lock
 
     const diagnosticsDisposable = vscode.languages.onDidChangeDiagnostics(e => {
         let currentErrorCount = 0;
@@ -16,24 +18,41 @@ export function activate(context: vscode.ExtensionContext) {
             currentErrorCount += errors.length;
         });
 
-        // If the tripwire is crossed!
-        if (currentErrorCount > previousErrorCount) {
-            const soundPath = path.join(context.extensionPath, 'sounds', 'mistake.mp3');
+        // 🚨 Check if there are new errors AND the cooldown is inactive
+        if (currentErrorCount > previousErrorCount && !isCooldown) {
 
-            // 🚨 NEW DEBUG LOGS 🚨
-            console.log('-----------------------------------');
-            console.log('🚨 MISTAKE DETECTED! 🚨');
-            console.log(`Errors went from ${previousErrorCount} to ${currentErrorCount}`);
-            console.log(`Attempting to play audio file at: ${soundPath}`);
-            console.log('-----------------------------------');
+            isCooldown = true; // Lock the trigger
 
-            // The Nuclear Option: Uses core Windows UI libraries to force audio playback
-            const command = `powershell -WindowStyle Hidden -Command "Add-Type -AssemblyName PresentationCore; $player = New-Object System.Windows.Media.MediaPlayer; $player.Open('${soundPath}'); $player.Play(); Start-Sleep -Seconds 5"`;
-            
-            exec(command, (error: any, stdout: any, stderr: any) => {
+            // 1. Grab the user's custom settings
+            const config = vscode.workspace.getConfiguration('errorSound');
+            const customSound = config.get<string>('customSoundPath');
+
+            // 2. Default to your built-in sound
+            let soundToPlay = path.join(context.extensionPath, 'sounds', 'mistake.mp3');
+
+            // 3. If they provided a custom path, and that file actually exists, use it!
+            if (customSound && customSound.trim() !== '') {
+                if (fs.existsSync(customSound)) {
+                    soundToPlay = customSound;
+                    console.log('Playing custom user sound:', soundToPlay);
+                } else {
+                    console.error('Custom sound file not found! Falling back to default.');
+                }
+            } else {
+                console.log('Playing default sound:', soundToPlay);
+            }
+
+            // 4. Play whatever sound we decided on
+            const command = `powershell -WindowStyle Hidden -Command "Add-Type -AssemblyName PresentationCore; $player = New-Object System.Windows.Media.MediaPlayer; $player.Open('${soundToPlay}'); $player.Play(); Start-Sleep -Seconds 5"`;
+
+            exec(command, (error: any) => {
                 if (error) console.error("PowerShell Error:", error);
-                if (stderr) console.error("PowerShell Stderr:", stderr);
             });
+
+            // Unlock the trigger after 3 seconds
+            setTimeout(() => {
+                isCooldown = false;
+            }, 3000);
         }
 
         previousErrorCount = currentErrorCount;
