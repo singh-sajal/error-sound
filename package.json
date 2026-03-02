@@ -22,6 +22,20 @@
           "default": true,
           "description": "Enable or disable the mistake maker."
         },
+        "errorSound.cursedTypos": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "fucntion",
+            "console.logg",
+            "pritn",
+            "retrun",
+            "teh"
+          ],
+          "description": "A list of misspelled words that will instantly trigger an error sound, even if you don't have a linter installed!"
+        },
         "errorSound.playForWarnings": {
           "type": "boolean",
           "default": true,
