@@ -7,6 +7,7 @@ export function activate(context: vscode.ExtensionContext) {
     console.log('Error Sound Extension is now active!');
 
     let previousErrorCount = 0;
+    let previousWarningCount = 0; // 🚨 Track warnings now!
     let isCooldown = false; 
     let totalSessionMistakes = 0;
     
@@ -17,65 +18,64 @@ export function activate(context: vscode.ExtensionContext) {
     mistakeCounterUI.show(); 
     context.subscriptions.push(mistakeCounterUI);
 
-    // 🚨 NEW LOGIC: The 2-Second Grace Period 🚨
     let typingTimer: NodeJS.Timeout | undefined;
     let isTyping = false;
+    let currentStreak = 0;
+    let lastMistakeTime = 0;
+    const STREAK_TIME_LIMIT = 30000;
 
-    // First, silently count any errors that already exist when the editor opens 
-    // (so it doesn't honk at you immediately on startup)
+    // Initial count of existing errors AND warnings
     vscode.workspace.textDocuments.forEach(doc => {
         const diagnostics = vscode.languages.getDiagnostics(doc.uri);
-        const errors = diagnostics.filter(d => d.severity === vscode.DiagnosticSeverity.Error);
-        previousErrorCount += errors.length;
+        previousErrorCount += diagnostics.filter(d => d.severity === vscode.DiagnosticSeverity.Error).length;
+        previousWarningCount += diagnostics.filter(d => d.severity === vscode.DiagnosticSeverity.Warning).length;
     });
 
-    // 1. Listen for EVERY keystroke
     const textDocumentDisposable = vscode.workspace.onDidChangeTextDocument(e => {
-        isTyping = true; // Tell the brain we are actively typing
+        isTyping = true; 
+        if (typingTimer) clearTimeout(typingTimer);
         
-        // Clear the existing stopwatch if they keep typing
-        if (typingTimer) {
-            clearTimeout(typingTimer);
-        }
-        
-        // Set a new stopwatch for 2 seconds (2000 milliseconds)
         typingTimer = setTimeout(() => {
-            isTyping = false; // We stopped typing!
-            evaluateDiagnostics(); // Now judge the code.
+            isTyping = false; 
+            evaluateDiagnostics(); 
         }, 2000);
     });
     context.subscriptions.push(textDocumentDisposable);
 
-    // 2. Listen for slow background linters
     const diagnosticsDisposable = vscode.languages.onDidChangeDiagnostics(e => {
-        // ONLY check for errors if the user's hands are off the keyboard!
-        if (!isTyping) {
-            evaluateDiagnostics();
-        }
+        if (!isTyping) evaluateDiagnostics();
     });
     context.subscriptions.push(diagnosticsDisposable);
 
-    // 3. The Judgment Function (Extracted from your old code)
     function evaluateDiagnostics() {
         const config = vscode.workspace.getConfiguration('errorSound');
         const isEnabled = config.get<boolean>('enabled');
+        const playForWarnings = config.get<boolean>('playForWarnings') || false;
         
         if (!isEnabled) return; 
 
         let currentErrorCount = 0;
+        let currentWarningCount = 0;
         
         vscode.workspace.textDocuments.forEach(doc => {
             const diagnostics = vscode.languages.getDiagnostics(doc.uri);
-            const errors = diagnostics.filter(d => d.severity === vscode.DiagnosticSeverity.Error);
-            currentErrorCount += errors.length;
+            currentErrorCount += diagnostics.filter(d => d.severity === vscode.DiagnosticSeverity.Error).length;
+            currentWarningCount += diagnostics.filter(d => d.severity === vscode.DiagnosticSeverity.Warning).length;
         });
 
-        // Did errors go up, and are we allowed to play a sound?
+        // 🚨 TIER 1: Hard Errors (Prioritized over warnings)
         if (currentErrorCount > previousErrorCount && !isCooldown) {
             isCooldown = true; 
-
             totalSessionMistakes++; 
             mistakeCounterUI.text = `🦆 Mistakes: ${totalSessionMistakes}`; 
+
+            const now = Date.now();
+            if (now - lastMistakeTime <= STREAK_TIME_LIMIT) {
+                currentStreak++;
+            } else {
+                currentStreak = 1;
+            }
+            lastMistakeTime = now;
 
             const soundSelection = config.get<string>('soundSelection') || 'Mistake';
             const customSoundPath = config.get<string>('customSoundPath') || '';
@@ -84,42 +84,57 @@ export function activate(context: vscode.ExtensionContext) {
             const cooldownSeconds = config.get<number>('cooldown') || 3;
 
             let textToShow = "";
-            if (messageSelection === "Custom") {
-                textToShow = customMessageText;
-            } else if (messageSelection !== "None") {
-                textToShow = messageSelection;
+            let soundFileName = soundSelection.toLowerCase() + '.mp3';
+
+            if (currentStreak === 3) {
+                textToShow = "🔥 TRIPLE KILL! 3 mistakes in 30 seconds! 🔥";
+                soundFileName = "triplekill.mp3";
+            } else if (currentStreak >= 5) {
+                textToShow = "💀 RAMPAGE! Someone take their keyboard away! 💀";
+                soundFileName = "rampage.mp3";
+            } else {
+                if (messageSelection === "Custom") textToShow = customMessageText;
+                else if (messageSelection !== "None") textToShow = messageSelection;
             }
 
-            if (textToShow !== "") {
-                vscode.window.showErrorMessage(textToShow);
-            }
+            if (textToShow !== "") vscode.window.showErrorMessage(textToShow);
 
             let soundToPlay = "";
-            if (soundSelection === "Custom") {
-                if (customSoundPath && fs.existsSync(customSoundPath)) {
-                    soundToPlay = customSoundPath;
-                } else {
-                    soundToPlay = path.join(context.extensionPath, 'sounds', 'mistake.mp3');
-                }
+            if (soundSelection === "Custom" && currentStreak < 3) {
+                if (customSoundPath && fs.existsSync(customSoundPath)) soundToPlay = customSoundPath;
+                else soundToPlay = path.join(context.extensionPath, 'sounds', 'mistake.mp3');
             } else {
-                const fileName = soundSelection.toLowerCase() + '.mp3';
-                soundToPlay = path.join(context.extensionPath, 'sounds', fileName);
+                soundToPlay = path.join(context.extensionPath, 'sounds', soundFileName);
+                if (!fs.existsSync(soundToPlay)) soundToPlay = path.join(context.extensionPath, 'sounds', 'mistake.mp3');
             }
             
-            if (fs.existsSync(soundToPlay)) {
-                const command = `powershell -WindowStyle Hidden -Command "Add-Type -AssemblyName PresentationCore; $player = New-Object System.Windows.Media.MediaPlayer; $player.Open('${soundToPlay}'); $player.Play(); Start-Sleep -Seconds 5"`;
-                exec(command, (error: any) => {
-                    if (error) console.error("PowerShell Error:", error);
-                });
-            }
+            playSound(soundToPlay);
 
-            setTimeout(() => {
-                isCooldown = false;
-            }, cooldownSeconds * 1000);
+            setTimeout(() => { isCooldown = false; }, cooldownSeconds * 1000);
+        }
+        // 🚨 TIER 2: Gentle Warnings (Only plays if no hard errors just occurred)
+        else if (playForWarnings && currentWarningCount > previousWarningCount && !isCooldown) {
+            isCooldown = true;
+            
+            const warningSound = path.join(context.extensionPath, 'sounds', 'warning.mp3');
+            playSound(warningSound);
+
+            // Warnings have a shorter, fixed 1-second cooldown so they don't block errors for long
+            setTimeout(() => { isCooldown = false; }, 1000);
         }
         
-        // Update the count (whether it went up or down)
         previousErrorCount = currentErrorCount;
+        previousWarningCount = currentWarningCount;
+    }
+
+    // Helper function to keep our code clean
+    function playSound(soundPath: string) {
+        if (fs.existsSync(soundPath)) {
+            const command = `powershell -WindowStyle Hidden -Command "Add-Type -AssemblyName PresentationCore; $player = New-Object System.Windows.Media.MediaPlayer; $player.Open('${soundPath}'); $player.Play(); Start-Sleep -Seconds 5"`;
+            exec(command, (error: any) => {
+                if (error) console.error("PowerShell Error:", error);
+            });
+        }
     }
 }
 

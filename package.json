@@ -22,6 +22,11 @@
           "default": true,
           "description": "Enable or disable the mistake maker."
         },
+        "errorSound.playForWarnings": {
+          "type": "boolean",
+          "default": true,
+          "description": "Play a gentle sound for warnings (yellow squigglies), not just errors."
+        },
         "errorSound.cooldown": {
           "type": "number",
           "default": 3,
