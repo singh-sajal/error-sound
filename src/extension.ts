@@ -1,43 +1,88 @@
 import * as vscode from 'vscode';
-import * as fs from 'fs';
 import * as path from 'path';
+import * as fs from 'fs';
 const { exec } = require('child_process');
 
 export function activate(context: vscode.ExtensionContext) {
     console.log('Error Sound Extension is now active!');
 
     let previousErrorCount = 0;
-    let isCooldown = false; // 👈 Our new safety lock
+    let isCooldown = false; 
+    let totalSessionMistakes = 0;
+    
+    // Status Bar UI
+    const mistakeCounterUI = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+    mistakeCounterUI.text = `🦆 Mistakes: 0`;
+    mistakeCounterUI.tooltip = "Total syntax errors made this session";
+    mistakeCounterUI.show(); 
+    context.subscriptions.push(mistakeCounterUI);
 
+    // 🚨 NEW LOGIC: The 2-Second Grace Period 🚨
+    let typingTimer: NodeJS.Timeout | undefined;
+    let isTyping = false;
+
+    // First, silently count any errors that already exist when the editor opens 
+    // (so it doesn't honk at you immediately on startup)
+    vscode.workspace.textDocuments.forEach(doc => {
+        const diagnostics = vscode.languages.getDiagnostics(doc.uri);
+        const errors = diagnostics.filter(d => d.severity === vscode.DiagnosticSeverity.Error);
+        previousErrorCount += errors.length;
+    });
+
+    // 1. Listen for EVERY keystroke
+    const textDocumentDisposable = vscode.workspace.onDidChangeTextDocument(e => {
+        isTyping = true; // Tell the brain we are actively typing
+        
+        // Clear the existing stopwatch if they keep typing
+        if (typingTimer) {
+            clearTimeout(typingTimer);
+        }
+        
+        // Set a new stopwatch for 2 seconds (2000 milliseconds)
+        typingTimer = setTimeout(() => {
+            isTyping = false; // We stopped typing!
+            evaluateDiagnostics(); // Now judge the code.
+        }, 2000);
+    });
+    context.subscriptions.push(textDocumentDisposable);
+
+    // 2. Listen for slow background linters
     const diagnosticsDisposable = vscode.languages.onDidChangeDiagnostics(e => {
-        // 1. Instantly grab the latest settings
+        // ONLY check for errors if the user's hands are off the keyboard!
+        if (!isTyping) {
+            evaluateDiagnostics();
+        }
+    });
+    context.subscriptions.push(diagnosticsDisposable);
+
+    // 3. The Judgment Function (Extracted from your old code)
+    function evaluateDiagnostics() {
         const config = vscode.workspace.getConfiguration('errorSound');
         const isEnabled = config.get<boolean>('enabled');
-
-        // 🚨 If the user turned the extension off in settings, stop immediately!
-        if (!isEnabled) return;
+        
+        if (!isEnabled) return; 
 
         let currentErrorCount = 0;
-
+        
         vscode.workspace.textDocuments.forEach(doc => {
             const diagnostics = vscode.languages.getDiagnostics(doc.uri);
             const errors = diagnostics.filter(d => d.severity === vscode.DiagnosticSeverity.Error);
             currentErrorCount += errors.length;
         });
 
-        // 🚨 Check if there are new errors AND the cooldown is inactive
+        // Did errors go up, and are we allowed to play a sound?
         if (currentErrorCount > previousErrorCount && !isCooldown) {
+            isCooldown = true; 
 
-            isCooldown = true; // Lock the trigger
+            totalSessionMistakes++; 
+            mistakeCounterUI.text = `🦆 Mistakes: ${totalSessionMistakes}`; 
 
-            // 1. Grab all the user settings
             const soundSelection = config.get<string>('soundSelection') || 'Mistake';
             const customSoundPath = config.get<string>('customSoundPath') || '';
             const messageSelection = config.get<string>('messageSelection') || 'None';
             const customMessageText = config.get<string>('customMessageText') || '';
             const cooldownSeconds = config.get<number>('cooldown') || 3;
 
-            // 2. Figure out WHICH TEXT to show
             let textToShow = "";
             if (messageSelection === "Custom") {
                 textToShow = customMessageText;
@@ -45,47 +90,37 @@ export function activate(context: vscode.ExtensionContext) {
                 textToShow = messageSelection;
             }
 
-            // Show the pop-up message (if one is set)
             if (textToShow !== "") {
                 vscode.window.showErrorMessage(textToShow);
             }
 
-            // 3. Figure out WHICH SOUND to play
             let soundToPlay = "";
             if (soundSelection === "Custom") {
                 if (customSoundPath && fs.existsSync(customSoundPath)) {
                     soundToPlay = customSoundPath;
                 } else {
-                    console.error('Custom sound not found! Falling back to default.');
                     soundToPlay = path.join(context.extensionPath, 'sounds', 'mistake.mp3');
                 }
             } else {
-                // Automatically match the dropdown name to the file name (e.g., "Buzzer" -> "buzzer.mp3")
                 const fileName = soundSelection.toLowerCase() + '.mp3';
                 soundToPlay = path.join(context.extensionPath, 'sounds', fileName);
             }
-
-            // 4. Play the sound!
+            
             if (fs.existsSync(soundToPlay)) {
                 const command = `powershell -WindowStyle Hidden -Command "Add-Type -AssemblyName PresentationCore; $player = New-Object System.Windows.Media.MediaPlayer; $player.Open('${soundToPlay}'); $player.Play(); Start-Sleep -Seconds 5"`;
-
                 exec(command, (error: any) => {
                     if (error) console.error("PowerShell Error:", error);
                 });
-            } else {
-                console.error("Audio file completely missing:", soundToPlay);
             }
 
-            // 5. Unlock the trigger after the cooldown
             setTimeout(() => {
                 isCooldown = false;
             }, cooldownSeconds * 1000);
         }
-
+        
+        // Update the count (whether it went up or down)
         previousErrorCount = currentErrorCount;
-    });
-
-    context.subscriptions.push(diagnosticsDisposable);
+    }
 }
 
-export function deactivate() { }
+export function deactivate() {}
