@@ -1,8 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { exec, ChildProcess } from 'child_process';
-
+import { exec, execSync, ChildProcess } from 'child_process';
 export function activate(context: vscode.ExtensionContext) {
     console.log('Error Sound Extension is now active!');
 
@@ -53,7 +52,33 @@ export function activate(context: vscode.ExtensionContext) {
         const isEnabled = config.get<boolean>('enabled');
         const playForWarnings = config.get<boolean>('playForWarnings') || false;
 
+        // 🚨 GET THE THEME 🚨
+        const theme = config.get<string>('theme') || 'Default';
+        // If Default, look in the root folder. Otherwise, look in the subfolder.
+        const themeFolder = theme === 'Default' ? '' : theme.toLowerCase();
+        // Add this line to spy on the extension!
+        console.log(`Current Theme: ${theme} | Looking in folder: sounds/${themeFolder}`);
+
+        // 🚨 NIGHTTIME MODE SETTINGS 🚨
+        const enableQuietHours = config.get<boolean>('enableQuietHours') || false;
+        const quietHourStart = config.get<number>('quietHourStart') || 23;
+        const quietHourEnd = config.get<number>('quietHourEnd') || 7;
+
         if (!isEnabled) return;
+
+        // 🚨 NIGHTTIME MODE LOGIC: Check if we are currently in Quiet Hours
+        let isMuted = false;
+        if (enableQuietHours) {
+            const currentHour = new Date().getHours(); // Gets the hour in 24hr format (0-23)
+
+            if (quietHourStart < quietHourEnd) {
+                // Example: 1 AM to 6 AM
+                isMuted = currentHour >= quietHourStart && currentHour < quietHourEnd;
+            } else {
+                // Example: 11 PM to 7 AM (Wraps across midnight)
+                isMuted = currentHour >= quietHourStart || currentHour < quietHourEnd;
+            }
+        }
 
         let currentErrorCount = 0;
         let currentWarningCount = 0;
@@ -99,23 +124,58 @@ export function activate(context: vscode.ExtensionContext) {
             }
             lastMistakeTime = now;
 
+            const config = vscode.workspace.getConfiguration('errorSound');
             const soundSelection = config.get<string>('soundSelection') || 'Mistake';
             const customSoundPath = config.get<string>('customSoundPath') || '';
             const messageSelection = config.get<string>('messageSelection') || 'None';
             const cooldownSeconds = config.get<number>('cooldown') || 3;
+            const enableGitBlame = config.get<boolean>('enableGitBlame') || false;
 
             let textToShow = "";
             let soundFileName = soundSelection.toLowerCase() + '.mp3';
 
-            // 1. Check for Killstreaks First (Highest Priority)
-            if (currentStreak === 3) {
+            // 🕵️‍♂️ GIT BLAME LOGIC: Find out who wrote this line!
+            let culpritName = "";
+            if (enableGitBlame) {
+                const editor = vscode.window.activeTextEditor;
+                if (editor) {
+                    const diagnostics = vscode.languages.getDiagnostics(editor.document.uri);
+                    const errors = diagnostics.filter(d => d.severity === vscode.DiagnosticSeverity.Error);
+
+                    if (errors.length > 0) {
+                        // Get the exact line number of the first error (Git is 1-indexed, VS Code is 0-indexed)
+                        const errorLine = errors[0].range.start.line + 1;
+                        const filePath = editor.document.uri.fsPath;
+
+                        try {
+                            // Run a silent, instant Git command to check that specific line
+                            const blameOutput = execSync(`git blame -p -L ${errorLine},${errorLine} "${filePath}"`, { encoding: 'utf8', stdio: 'pipe' });
+
+                            // Use Regex to extract the author's name from the Git output
+                            const authorMatch = blameOutput.match(/^author (.*)$/m);
+                            if (authorMatch) {
+                                culpritName = authorMatch[1].trim();
+                            }
+                        } catch (err) {
+                            // Silently fail if this file isn't in a Git repository
+                        }
+                    }
+                }
+            }
+
+            // 1. Check Git Blame First! (Highest Priority Override)
+            if (culpritName && culpritName !== "Not Committed Yet") {
+                textToShow = `🚨 Hey! ${culpritName} wrote this broken code! 🚨`;
+            }
+            // 2. Then check for Killstreaks
+            else if (currentStreak === 3) {
                 textToShow = "🔥 TRIPLE KILL! 3 mistakes in 30 seconds! 🔥";
                 soundFileName = "triplekill.mp3";
             } else if (currentStreak >= 5) {
                 textToShow = "💀 RAMPAGE! Someone take their keyboard away! 💀";
                 soundFileName = "rampage.mp3";
             }
-            // 2. No Killstreak? Check the Language! (Easter Eggs)
+            // 3. No Killstreak or Blame? Check the Language! (Easter Eggs)
             else {
                 const currentLanguage = vscode.window.activeTextEditor?.document.languageId;
 
@@ -130,7 +190,7 @@ export function activate(context: vscode.ExtensionContext) {
                 else if (currentLanguage === 'html') {
                     if (messageSelection !== "None") textToShow = "🌐 HTML isn't even a real programming language! 🌐";
                 }
-                // 3. Normal Fallback
+                // 4. Normal Fallback
                 else {
                     if (messageSelection === "Custom") textToShow = config.get<string>('customMessageText') || '';
                     else if (messageSelection !== "None") textToShow = messageSelection;
@@ -144,19 +204,46 @@ export function activate(context: vscode.ExtensionContext) {
                 if (customSoundPath && fs.existsSync(customSoundPath)) soundToPlay = customSoundPath;
                 else soundToPlay = path.join(context.extensionPath, 'sounds', 'mistake.mp3');
             } else {
-                soundToPlay = path.join(context.extensionPath, 'sounds', soundFileName);
-                if (!fs.existsSync(soundToPlay)) soundToPlay = path.join(context.extensionPath, 'sounds', 'mistake.mp3'); // Failsafe
+                // 1. First, try to find the sound inside the selected Theme folder!
+                soundToPlay = path.join(context.extensionPath, 'sounds', themeFolder, soundFileName);
+
+                // 🕵️‍♂️ THE ULTIMATE SPY LOG: See exactly what path it is checking
+                console.log(`Attempting to find: ${soundToPlay}`);
+                console.log(`File actually exists here: ${fs.existsSync(soundToPlay)}`);
+
+                
+                // 2. Failsafe: If the theme folder doesn't have this specific file, fall back to the Default folder
+                if (!fs.existsSync(soundToPlay)) {
+                    soundToPlay = path.join(context.extensionPath, 'sounds', soundFileName);
+                }
+
+                // 3. Double Failsafe: If it's completely missing, use the default mistake sound
+                if (!fs.existsSync(soundToPlay)) {
+                    soundToPlay = path.join(context.extensionPath, 'sounds', 'mistake.mp3');
+                }
             }
 
-            playSound(soundToPlay);
+            if (!isMuted) {
+                playSound(soundToPlay);
+            } else {
+                mistakeCounterUI.text = `🦆 Mistakes: ${totalSessionMistakes} 🔇`;
+            }
 
             setTimeout(() => { isCooldown = false; }, cooldownSeconds * 1000);
         }
         // 🚨 TIER 2: Gentle Warnings
         else if (playForWarnings && currentWarningCount > previousWarningCount && !isCooldown) {
             isCooldown = true;
-            const warningSound = path.join(context.extensionPath, 'sounds', 'warning.mp3');
-            playSound(warningSound);
+
+            // Check the theme folder for a custom warning sound first
+            let warningSound = path.join(context.extensionPath, 'sounds', themeFolder, 'warning.mp3');
+            if (!fs.existsSync(warningSound)) {
+                warningSound = path.join(context.extensionPath, 'sounds', 'warning.mp3'); // Fallback
+            }
+
+            if (!isMuted) {
+                playSound(warningSound);
+            }
             setTimeout(() => { isCooldown = false; }, 1000);
         }
 
@@ -200,4 +287,4 @@ export function activate(context: vscode.ExtensionContext) {
     }
 }
 
-export function deactivate() {}
+export function deactivate() { }

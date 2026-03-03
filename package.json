@@ -3,6 +3,10 @@
   "displayName": "Error Sound",
   "description": "Plays a sound when i mess up.",
   "version": "0.0.1",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/singh-sajal/error-sound.git"
+  },
   "engines": {
     "vscode": "^1.109.0"
   },
@@ -36,6 +40,32 @@
           ],
           "description": "A list of misspelled words that will instantly trigger an error sound, even if you don't have a linter installed!"
         },
+        "errorSound.enableGitBlame": {
+          "type": "boolean",
+          "default": true,
+          "description": "Call out the specific coworker who wrote the broken line using Git Blame."
+        },
+        "errorSound.theme": {
+          "type": "string",
+          "enum": ["Default", "Arcade", "Meme", "Nature"],
+          "default": "Default",
+          "description": "Choose a master sound theme! This changes the sounds for mistakes, warnings, and killstreaks."
+        },
+        "errorSound.enableQuietHours": {
+          "type": "boolean",
+          "default": false,
+          "description": "Mute all sounds during specific hours (Nighttime Mode)."
+        },
+        "errorSound.quietHourStart": {
+          "type": "number",
+          "default": 23,
+          "description": "The hour (0-23) to START muting sounds. Default is 23 (11 PM)."
+        },
+        "errorSound.quietHourEnd": {
+          "type": "number",
+          "default": 7,
+          "description": "The hour (0-23) to STOP muting sounds. Default is 7 (7 AM)."
+        },
         "errorSound.playForWarnings": {
           "type": "boolean",
           "default": true,
@@ -50,8 +80,7 @@
           "type": "string",
           "enum": [
             "Mistake",
-            "Buzzer",
-            "Quack",
+            "Meow",
             "Custom"
           ],
           "default": "Mistake",
